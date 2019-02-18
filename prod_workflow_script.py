@@ -43,6 +43,9 @@ def run(env, jsn = 'missing'):
   from pytz import timezone  
   from  modules.logger import writelog
   
+  from skimage import filters
+
+  
   import gc
   import os
   from skimage.color import rgb2lab, deltaE_cie76   ### alternative vertical shelves detection  
@@ -124,12 +127,12 @@ def run(env, jsn = 'missing'):
 
 
   def colour_map(shelf):
-      MAP = {0: [255, 0, 0], 1: [0, 0, 255], 2: [0, 255, 0], 3: [0, 255, 255], 4: [255, 255, 0], 5: [24, 49, 216], 6: [0, 209, 229], 7: [46, 60, 62]}
+      MAP = {0: [255, 0, 0], 1: [0, 0, 255], 2: [0, 255, 0], 3: [0, 255, 255], 4: [255, 255, 0], 5: [24, 49, 216], 6: [0, 209, 229], 7: [46, 60, 62], 8: [255, 128, 0], 9: [255, 0, 191]}
       if shelf < 0:
           return [0, 0, 0 ]
       return MAP.get(shelf % len(MAP))
 
-
+    
   def compute_dominance_relations(detections):
       """"""
       for i, frame in enumerate(detections):
@@ -469,6 +472,90 @@ def run(env, jsn = 'missing'):
 
 
 # In[4]:
+  def filterDetections(sizes_x_arr, sizes_y_arr, detections_all, extracted_all, is_big):
+
+    val_x = filters.threshold_otsu(sizes_x_arr)
+    val_y = filters.threshold_otsu(sizes_y_arr)
+  
+    over_x = len(sizes_x_arr[sizes_x_arr>val_x])
+    under_x = len(sizes_x_arr[sizes_x_arr<val_x])
+    over_y = len(sizes_y_arr[sizes_y_arr>val_y])
+    under_y = len(sizes_y_arr[sizes_y_arr<val_y])
+  
+    if is_big:
+        if over_x < under_x:
+            val_x = 10000      
+    if True:    
+        if (over_x < under_x) and (over_y < under_y) :        
+                detections_wo = list()
+                extracted_wo = list()
+                for idx, l in enumerate(detections_all):
+                  if ((l['box_points'][2] - l['box_points'][0]) < val_x)  and ((l['box_points'][3] - l['box_points'][1]) < val_y) :
+                      detections_wo.append(l)  
+                      extracted_wo.append(extracted_all[idx])
+
+        elif (over_x < under_x) and (over_y > under_y) :
+                detections_wo = list()
+                extracted_wo = list()
+                for idx, l in enumerate(detections_all):
+                  if ((l['box_points'][2] - l['box_points'][0]) < val_x)  and ((l['box_points'][3] - l['box_points'][1]) > val_y) :
+                      detections_wo.append(l)
+                      extracted_wo.append(extracted_all[idx])
+        elif (over_x > under_x) and (over_y < under_y) :               
+                detections_wo = list()
+                extracted_wo = list()
+                for idx, l in enumerate(detections_all):
+                  if ((l['box_points'][2] - l['box_points'][0]) > val_x)  and ((l['box_points'][3] - l['box_points'][1]) < val_y) :
+                      detections_wo.append(l)
+                      extracted_wo.append(extracted_all[idx])
+        else:
+                detections_wo = list()
+                extracted_wo = list()
+                for idx, l in enumerate(detections_all):
+                  if ((l['box_points'][2] - l['box_points'][0]) > val_x)  and ((l['box_points'][3] - l['box_points'][1]) > val_y) :
+                      detections_wo.append(l)
+                      extracted_wo.append(extracted_all[idx])
+    
+    return detections_wo, extracted_wo    
+
+
+  def isInShelf(box, upperLine, lowerLine):
+    """  Check if the box is between those lines, upper < lower (0,0, is left-upper corner)  
+    """
+
+    p = box['box_points']
+    box_height = p[3] - p[1]
+    box_height
+    cut_box_height = min(lowerLine, p[3]) - max(upperLine, p[1]) 
+    if box_height - cut_box_height > 1/4*box_height:  ## how much I cut, too much cut -> not in this shelf
+      return False
+    else: 
+      return True
+  
+  
+  def getShelves(detections, lines):
+    """ assign shelves to detections
+    """
+
+    for idx,det in enumerate(detections):
+      dist_to_shelf = np.zeros(len(lines))
+      b_points = det['box_points']
+      b_height = b_points[3] - b_points[1] 
+      for l in range(len(lines)): 
+        dist_to_shelf[l] = lines[l] - b_points[1]  ### distance of upper-left corner from lines
+        if dist_to_shelf[l] < 0:
+            dist_to_shelf[l] = 100000 ## sth huge  
+      #print(dist_to_shelf)             
+      det['shelf'] = np.argmin(dist_to_shelf)
+    return detections  
+
+  def order_shelf_map(order):
+      """ get first row in the photo and column (according to planograms) from order of photo (according to schema they took photos) 
+      """
+      MAP = {0: [0, 0], 1: [3, 0], 2: [0,1], 3: [3, 1], 4: [0, 2], 5: [3, 2]}
+      if order < 0:
+          return [0, 0]
+      return MAP.get(order % len(MAP))
 
 
 ### vyhodit???
@@ -597,39 +684,22 @@ def run(env, jsn = 'missing'):
     #image = blur_image(edges, amount = 7)
 
     
+    #### edges detection will be here
     
-    image, lines = detectVertShelf(img, 30, img.shape[0]/7)
-   
+    left_chop = 0
+    
+    ####
+    
+    
     #lines = cv2.HoughLinesP(image, rho = 1, theta = math.pi, threshold = 20, minLineLength = img.shape[0]/1.5, maxLineGap = 0)
     #if lines is None:
     #    lines = cv2.HoughLinesP(image, rho = 1, theta = math.pi, threshold = 50, minLineLength = img.shape[0]/2.5, maxLineGap = 3)
 
-    img2 = img.copy()
-    if lines is None:
-      img_chopped = img.copy()
-    else:
-      lines = sorted(lines,key=lambda x: x[0,0])
-      dominance = -1000
-      right_chop = img.shape[1]
-      left_chop = 0
-
-      for line2 in range(len(lines)):
-          line = lines[line2]
-          if line[0,0] - dominance > 0.2*img.shape[1]:
-              if (line[0,0] < 0.2*img.shape[1] or line[0,0] > 0.8*img.shape[1]):
-                  if (line[0,0] < 0.2*img.shape[1]):
-                    left_chop = line[0,0]
-                  if (line[0,0] > 0.8*img.shape[1]):
-                    right_chop = line[0,0]
-                  pt1 = (line[0,0],line[0,1])
-                  pt2 = (line[0,2],line[0,3])
-                  #cv2.line(img, pt1, pt2, (0,0,255), 3)
-                  dominance = line[0,0]
-          pt1 = (line[0,0],line[0,1])
-          pt2 = (line[0,2],line[0,3])
-          cv2.line(img2, pt1, pt2, (0,0,255), 3)
-
-      img_chopped = img[:,left_chop:right_chop,:]
+    img_chopped = img.copy()
+    
+    
+    
+    ##### detection
     PERC = 30
 
     print('image ok')
@@ -668,7 +738,7 @@ def run(env, jsn = 'missing'):
       main_obj_2, detections_2, extracted_obj_2 = detector.detectCustomObjectsFromImage(input_image= img_chopped_rot, 
                                                         input_type="array",
                                                         output_type = 'array', 
-                                                        output_image_path= "./im.png", 
+                                                        output_image_path= "{}im.png".format(outputpath), 
                                                         custom_objects=custom_objects,
                                                         extract_detected_objects=True,
                                                         minimum_percentage_probability=PERC)
@@ -684,7 +754,7 @@ def run(env, jsn = 'missing'):
         main_obj_3, detections_3, extracted_obj_3 = detector.detectCustomObjectsFromImage(input_image= img_chopped_rot, 
                                                         input_type="array",
                                                         output_type = 'array', 
-                                                        output_image_path= "./im.png", 
+                                                        output_image_path= "{}im.png".format(outputpath), 
                                                         custom_objects=custom_objects,
                                                         extract_detected_objects=True,
                                                         minimum_percentage_probability=PERC)
@@ -733,114 +803,163 @@ def run(env, jsn = 'missing'):
 
     gc.collect()
     
-    shelf_tuple = [(l['box_points'][0], l['box_points'][2]) for l in detections_all]
-    shelf_tuple_y = [(l['box_points'][1], l['box_points'][3]) for l in detections_all]
-    shelf_tuple_wo = shelf_tuple.copy()
-    shelf_tuple.append((0,0))
-    shelf_tuple.append((img_chopped.shape[1], img_chopped.shape[1]))
-    sorted_by_lower_bound = sorted(shelf_tuple, key=lambda tup: tup[0])
-    merged = []
+    
+##### filtering
 
-    for higher in sorted_by_lower_bound:
-          if not merged:
-              merged.append(higher)
-          else:
-              lower = merged[-1]
-              if higher[0] <= lower[1]:
-                  upper_bound = max(lower[1], higher[1])
-                  merged[-1] = (lower[0], upper_bound)  # replace by merged interval
-              else:
-                  merged.append(higher)
-    remove = []
-    for i in range(len(merged)-1):
-      if merged[i+1][0]-merged[i][1] > img_chopped.shape[1]*0.05:
-        remove.append((merged[i][1], merged[i+1][0]))
+  user = jsn['metadata']['Uploader-Name']
+  store = jsn['metadata']['Store-Address']
+  retailer = store.split(" ")[0]
+  address = " ".join(store.split(" ")[1:])
+  order = jsn['order']
 
-    img_chopped_fin = img_chopped.copy()
+  # order = 3
+  # store = "Sárská 133/5 Praha Praha 13 15500 (S2753CZ)"
 
-### zatim zakomentavane, TD: zjistit, o kolik se tu orizne -> pricist k left_chop
-#     down_grade = 0
-#     for i in remove:
-#       #img_chopped_fin = img_chopped_fin[:,0:i[0] - down_grade + 1,:] + img_chopped_fin[:,i[1]- down_grade - 1:,:]
-#       img_chopped_fin = img_chopped_fin[:, np.r_[0:i[0] - down_grade + 1,i[1]- down_grade - 1: img_chopped_fin.shape[1]], :]
-#       down_grade += i[1] - i[0]
+  ### load planograms and check if there is any big can in photo
+  #   (for function filterDetections)
 
+  plan_path = "{}parsed_planograms.pickle".format(modelpath)
+  with open(plan_path, 'rb') as handle:
+        planograms = pickle.load(handle)
 
-# In[8]:
+  store_location = parse_store_location(store)
+  date="2018-11"
+  plan_dates = list(map(lambda x:x.split("_")[0],planograms["plan_name"]))
+  plan_stores = list(map(lambda x:x.split("_")[2],planograms["plan_name"]))
+  plan_names_df = pd.DataFrame({"plan_dates" : plan_dates, "plan_stores": plan_stores})
+  target_ind = plan_names_df.index[(plan_names_df["plan_dates"] == date) & (plan_names_df["plan_stores"] == store_location)].tolist()[0]
+  plan = planograms["plan_df"][target_ind]
+  row, column = order_shelf_map(order)
+  
+  plan_all = pd.DataFrame()
+  for i in range(0,3):  ### three shelves in one photo (ideally)
+      row_pom = row + i
+      plan_pom = plan.loc[(plan['row'] == row_pom) & (plan['column'] == column)]
+      plan_all = plan_all.append(plan_pom)
 
+  if max(plan_all['unit_height']) > 15:   ### big can is present (needed for heuristics)
+    isBig = True
+  else:
+    isBig = False    
 
-### sizes of boxes
+  ######### heuristics
+    
+  shelf_tuple = [(l['box_points'][0], l['box_points'][2]) for l in detections_all]
+  shelf_tuple_y = [(l['box_points'][1], l['box_points'][3]) for l in detections_all]
+  shelf_tuple_wo = shelf_tuple.copy()
+  shelf_tuple.append((0,0))
+  shelf_tuple.append((img_chopped.shape[1], img_chopped.shape[1]))
+  #sorted_by_lower_bound = sorted(shelf_tuple, key=lambda tup: tup[0])
+  # detections_orig = detections_all
+  sizes_x = [l[1] - l[0] for l in shelf_tuple_wo]
+  sizes_y = [l[1] - l[0] for l in shelf_tuple_y]
+  sizes_x_arr = np.array(sizes_x)
+  sizes_y_arr = np.array(sizes_y)
+    
+  print(len(detections_all))
+  print(len(extracted_all))
+    
+  detections_wo, extracted_wo = filterDetections(sizes_x_arr, sizes_y_arr, detections_all, extracted_all, isBig)  ## filter weird boxes by coords
+
+  print(len(detections_wo))
+  print(len(extracted_wo))
+  shelf_tuple = [(l['box_points'][0], l['box_points'][2]) for l in detections_wo]
+  shelf_tuple_y = [(l['box_points'][1], l['box_points'][3]) for l in detections_wo]
+  shelf_tuple_wo = shelf_tuple.copy()
+  shelf_tuple.append((0,0))
+  shelf_tuple.append((img_chopped.shape[1], img_chopped.shape[1]))
+  #sorted_by_lower_bound = sorted(shelf_tuple, key=lambda tup: tup[0])
 
   sizes_x = [l[1] - l[0] for l in shelf_tuple_wo]
   sizes_y = [l[1] - l[0] for l in shelf_tuple_y]
   sizes_x_arr = np.array(sizes_x)
   sizes_y_arr = np.array(sizes_y)
-  #plt.hist(sizes_x_arr, bins = 20)
+ 
+  img_chopped_fin = img_chopped.copy()
 
-  if np.mean(sizes_x_arr) - 2.5*np.std(sizes_x_arr) < np.percentile(sizes_x_arr, 5):
-    cut_lower_x = np.mean(sizes_x_arr) - 2.5*np.std(sizes_x_arr) 
-  else:
-    cut_lower_x = np.percentile(sizes_x_arr, 5)
 
-  if np.mean(sizes_x_arr) + 2.5*np.std(sizes_x_arr) > np.percentile(sizes_x_arr, 95):
-    cut_upper_x = np.mean(sizes_x_arr) + 2.5*np.std(sizes_x_arr)
-  else:
-    cut_upper_x = np.percentile(sizes_x_arr, 95)
+# In[8]:
 
-  if np.mean(sizes_y_arr) - 2.5*np.std(sizes_y_arr) < np.percentile(sizes_y_arr, 5):
-    cut_lower_y = np.mean(sizes_y_arr) - 2.5*np.std(sizes_y_arr) 
-  else:
-    cut_lower_y = np.percentile(sizes_y_arr, 5)
+    ### version without horizontal edges detection
+    
+  GAP = 15
+  detections = detect_shelves(copy.deepcopy(detections_wo)) # zaradi do regalu
+  detections_sh = correct_shelves(copy.deepcopy(detections), img_chopped_fin) # oznaci ty co nejsou v zadnem regalu
 
-  if np.mean(sizes_y_arr) + 2.5*np.std(sizes_y_arr) > np.percentile(sizes_y_arr, 95):
-    cut_upper_y = np.mean(sizes_y_arr) + 2.5*np.std(sizes_y_arr)
-  else:
-    cut_upper_y = np.percentile(sizes_y_arr, 95)
-
+    
+    ### version with horizontal edges detection
+    ## lines ... ouput from edge detection function
+    
+  hor_edg_det = False  ## delete this and the if after adding the function
+    
+  if hor_edg_det == True:
+        lines.append(img.shape[0])
+        lines_correct = []
+        min_in_shelf = 2
+        last_n_incorrect = 0
+        for i in range(len(lines)): 
+          if i == 0:  ## upper line
+            upperLine = 0  ## top of image
+            lowerLine = lines[0]
+          else:  
+            if last_n_incorrect > 0:   ### in this case, upperline will not move
+              if last_n_incorrect >= i:   ### we would be oout of array (lines[-something])
+                upperLine = 0
+              else:
+                upperLine = lines[i-last_n_incorrect-1]
+            else: 
+              upperLine = lines[i-1]
+            
+            lowerLine = lines[i]
+          #print([upperLine, lowerLine])    
+          cntr = 0 ### how many detected boxes is between
+          for idx in range(len(detections_wo)): 
+            if isInShelf(detections_wo[idx], upperLine, lowerLine) == True:
+              cntr = cntr + 1
+          #print(cntr)
+          if cntr > min_in_shelf:
+            lines_correct.append(lines[i])
+            last_n_incorrect = 0
+          else:
+            last_n_incorrect = last_n_incorrect + 1
+            
+        ### we have correct lines of horizontal edged 
+        ## match detected boxes to thosse shelves
+        
+        detections_sh = getShelves(copy.deepcopy(detections_wo), copy.deepcopy(lines_correct))
+        
 
 # In[9]:
 
-
-### shelf detector (from detections + domination, without poles)
-  GAP = 15
-  detections = detect_shelves(detections_all) # zaradi do regalu
-  detections = correct_shelves(detections, img_chopped_fin)  # oznaci ty co nejsou v zadnem regalu
-  
   shelves = list()   ### filter out shelves with <= .. detected objects
-  for i in range(len(detections)):  
-    shelves.append(detections[i]['shelf'])  ## separate shelf numbers
+  for i in range(len(detections_sh)):  
+      shelves.append(detections_sh[i]['shelf'])  ## separate shelf numbers
   x=np.array(shelves)
   unique, counts = np.unique(x, return_counts=True)   ### frequency
-  
+    
+  print(unique)
+  print(counts)
+    
   if unique[0]== -1:
-    counts2= counts[1:len(counts)]   ### eliminate -1 shelf
-    unique2= unique[1:len(unique)]
+      counts2= counts[1:len(counts)]   ### eliminate -1 shelf
+      unique2= unique[1:len(unique)]
   else:
-    counts2=counts
-    unique2=unique
+      counts2=counts
+      unique2=unique
 
   shelves_ok = list()
   for i in range(len(counts2)):
-    if counts2[i]>=4:   ### choose shelves
-      shelves_ok.append(unique2[i])
+      if counts2[i]>=4:   ### choose shelves
+        shelves_ok.append(unique2[i])
   
-  detections_ok = list()   ### filter detections in ok shelves
+  detections_ok = list()   ### filter detections in ok shelves (-1 removed)
   extracted_all_ok = list()
-  for i in range(len(detections)):
-    if detections[i]['shelf'] in shelves_ok:
-      detections_ok.append(detections[i])
-      extracted_all_ok.append(extracted_all[i])
-  
-  
-  detections_ok_shift = shiftDetections(copy.deepcopy(detections_ok), left_chop)
-  main_obj = colour_shelves(detections_ok_shift, img_chopped_fin.copy())
-  #img_chopped_fin
-  #Img.fromarray(main_obj, 'RGB')
-  #Img.fromarray(img, 'RGB')
-  
+  for i in range(len(detections_sh)):
+      if detections_sh[i]['shelf'] in shelves_ok:
+        detections_ok.append(detections_sh[i])
+        extracted_all_ok.append(extracted_wo[i])
  
-### reindexing of shelves, "0:number"
-
+   ### premapovani regalu 0:"jejich pocet"
   unique_po, counts_po = np.unique(np.array(shelves_ok), return_counts=True)
   seq=list()
   for i in range(len(unique_po)):
@@ -853,49 +972,13 @@ def run(env, jsn = 'missing'):
     detections_ok_reshelved[i]['shelf'] = d.get(detections_ok[i]['shelf'])
 
 
-# In[10]:
-
-
-### filter empty vertical stripes of photo + filter out weird detected boxes
-
-  shelf_tuple = list()
-  detections_wo = list()
-  extractions_wo = list()
   shlvs = list()
+  for det in detections_ok_reshelved:
+    shlvs.append(det['shelf'])
 
-  for idx, l in enumerate(detections_ok_reshelved):
-              if l['shelf'] == -1:
-                  shelf_tuple.append( (l['box_points'][0], l['box_points'][2]) )
-              else:
-                if ((l['box_points'][2] - l['box_points'][0]) > cut_lower_x) or ((l['box_points'][2] - l['box_points'][0]) < cut_upper_x) or ((l['box_points'][3] - l['box_points'][1]) > cut_lower_y) or ((l['box_points'][3] - l['box_points'][1]) < cut_upper_y) :
-                  detections_wo.append(l)
-                  extractions_wo.append(extracted_all_ok[idx])
-                  shlvs.append(l['shelf'])
-  shelf_tuple.append((0,0))
-  shelf_tuple.append((img_chopped_fin.shape[1], img_chopped_fin.shape[1]))
-  sorted_by_lower_bound = sorted(shelf_tuple, key=lambda tup: tup[0])
-  merged = []
 
-  for higher in sorted_by_lower_bound:
-                  if not merged:
-                      merged.append(higher)
-                  else:
-                      lower = merged[-1]
-                      if higher[0] <= lower[1]:
-                          upper_bound = max(lower[1], higher[1])
-                          merged[-1] = (lower[0], upper_bound)  # replace by merged interval
-                      else:
-                          merged.append(higher)
-
-  remove = merged
   img_chopped_completed = img_chopped_fin.copy()
-### zatim zakomentavane, TD: zjistit, o kolik se tu orizne -> pricist k left_chop
-#  down_grade = 0
-#  for i in remove:
-#              #img_chopped_fin = img_chopped_fin[:,0:i[0] - down_grade + 1,:] + img_chopped_fin[:,i[1]- down_grade - 1:,:]
-#              img_chopped_completed = img_chopped_completed[:, np.r_[0:i[0] - down_grade + 1,i[1]- down_grade - 1: img_chopped_completed.shape[1]], :]
-#              down_grade += i[1] - i[0]
-
+  
 
 # In[11]:
 
@@ -951,8 +1034,11 @@ def run(env, jsn = 'missing'):
   tmp_5 = [(0,0) for i in range(len(detections_wo))]
   tmp_6 = [(0,0) for i in range(len(detections_wo))]
   tmp_7 = [(0,0) for i in range(len(detections_wo))]
+  tmp_8 = [(0,0) for i in range(len(detections_wo))]
+  tmp_9 = [(0,0) for i in range(len(detections_wo))]
+
   
-  class_tuples = {'rb': tmp, 'rbsf':tmp_4, 'bigshock': tmp_2, 'rbblue':tmp_3, 'rbred': tmp_5, 'rbturned': tmp_6, 'unknown': tmp_7 }
+  class_tuples = {'rb': tmp, 'rbsf':tmp_4, 'bigshock': tmp_2, 'rbblue':tmp_3, 'rbred': tmp_5, 'rbturned': tmp_6, 'unknown': tmp_7, 'bigshockrest': tmp_8, 'rbyellow': tmp_9 }
   class_names = class_tuples.keys()
   no_same = 0
   no_diff = 0
@@ -960,13 +1046,13 @@ def run(env, jsn = 'missing'):
 
   
 
-  for e in range(len(extractions_wo)):
+  for e in range(len(extracted_all_ok)):
    
     #if len(extractions_wo[e]) > 0: 
-    if extractions_wo[e].size != 0: 
+    if extracted_all_ok[e].size != 0: 
       try:
         #writelog('1.', env=env)
-        pom = cv2.cvtColor(extractions_wo[e], cv2.COLOR_RGB2BGR) 
+        pom = cv2.cvtColor(extracted_all_ok[e], cv2.COLOR_RGB2BGR) 
         #writelog('1.', env=env)
         cv2.imwrite('{}img1.jpg'.format(outputpath), pom)
         print('create file OK')
@@ -979,14 +1065,14 @@ def run(env, jsn = 'missing'):
           #request = prediction_client.predict(name, payload, params)
           #detections_wo[e]['class'] = request.payload[0].display_name
         lbl, pst = local_recognizer('{}img1.jpg'.format(outputpath), graph_1)
-        detections_wo[e]['class'] = lbl 
-        if detections_wo[e]['class'] in class_names:
+        detections_ok[e]['class'] = lbl 
+        if detections_ok[e]['class'] in class_names:
 
           #print(lbl)
           #print(request.payload[0].display_name)
           #print('---')
 
-          class_tuples[detections_wo[e]['class']][e] = (detections_wo[e]['box_points'][0],detections_wo[e]['box_points'][2])
+          class_tuples[detections_ok[e]['class']][e] = (detections_ok[e]['box_points'][0],detections_ok[e]['box_points'][2])
       except Exception as err:
         print("chyba v predikci", e)
         writelog(err, env=env, level='WARNING')
@@ -1057,13 +1143,14 @@ def run(env, jsn = 'missing'):
   objects= list()  ## for planograms
       
   for k in range(shelves_no+1):
+    #k = 3
     this_shelf = list()
     shelf_labels = list()    ### labels present in shelf
     shelf_positions = list()  ### positions of cans in this shelf (both for checking planograms)
     for clss in class_names:
       cntr = 0
       shelf_tuple = list()
-      for idx, l in enumerate(detections_wo):
+      for idx, l in enumerate(detections_wo):    ## (or detections_ok, does not matter)
         if l['shelf'] == k:
           shelf_tuple.append(class_tuples[clss][idx])
           #if l['class'] == clss:
@@ -1084,12 +1171,16 @@ def run(env, jsn = 'missing'):
                 merged[-1] = (lower[0], upper_bound)  # replace by merged interval
             else:
                 merged.append(higher)
-    
-      if clss != 'rbturned':    ## rbturned will be an exception (for planograms rbturned==redbull)
-          shelf_labels.append(clss)
-          shelf_positions.append(merged)
+    #objects.append({'label':shelf_labels, 'location':shelf_positions})  ### first shelf will be on objects[0], second on 1 etc.
+   
+      if clss != 'rbturned':    ## rbturned, bigshockrest will be an exception (for planograms rbturned==redbull, bigshockrest == bigshock)
+        if clss != 'bigshockrest':          
+            shelf_labels.append(clss)
+            shelf_positions.append(merged)
+        else:
+            bigshockrest = merged
       else:
-          rbturned = merged
+        rbturned = merged
           
         
       this_shelf.append({'label': clss, 'cans': merged})
@@ -1104,32 +1195,54 @@ def run(env, jsn = 'missing'):
     
     objects.append({'label':shelf_labels, 'location':shelf_positions})  ### first shelf will be on objects[0], second on 1 etc.
   
-  
-  for i in range(len(objects[k]['label'])):  ### find redbull index  
-      if objects[k]['label'][i] != 'rb': 
-          ind_rb= i
-          rb_all = objects[k]['location'][i]
-  
-  for i in range(len(rbturned)):   ## binb rb_all and rbturned
-    rb_all.append(rbturned[i])
-    
-  sorted_by_lower_bound = sorted(rb_all, key=lambda tup: tup[0])   ### and sort and choose distinct
-  
-  merged = []
+    objects[k]
+    for i in range(len(objects[k]['label'])):  ### find redbull index, bigshockrest index  
+      if objects[k]['label'][i] == 'rb': 
+        ind_rb = i
+        rb_all = objects[k]['location'][i]      
+      if objects[k]['label'][i] == 'bigshock':
+        ind_bigshock = i
+        bigshock_all = objects[k]['location'][i]
 
-  for higher in sorted_by_lower_bound:
-        if not merged:
-            merged.append(higher)
-        else:
-            lower = merged[-1]
-            if higher[0] <= lower[1]:
-                upper_bound = max(lower[1], higher[1])
-                merged[-1] = (lower[0], upper_bound)  # replace by merged interval
-            else:
-                merged.append(higher)
-      
-  objects[k]['location'][ind_rb] = merged   ### write it ro rb --> rbturned and rb together  
-     
+    for i in range(len(rbturned)):   ## bind rb_all and rbturned
+      rb_all.append(rbturned[i])
+  
+    for i in range(len(bigshockrest)):   ## bind bigshock and bigshockrest
+      bigshock_all.append(bigshockrest[i])
+  
+  
+    sorted_by_lower_bound = sorted(rb_all, key=lambda tup: tup[0])   ### and sort and choose distinct for all redbulls
+  
+    merged = []
+
+    for higher in sorted_by_lower_bound:
+      if not merged:
+          merged.append(higher)
+      else:
+          lower = merged[-1]
+          if higher[0] <= lower[1]:
+              upper_bound = max(lower[1], higher[1])
+              merged[-1] = (lower[0], upper_bound)  # replace by merged interval
+          else:
+              merged.append(higher)
+    
+    objects[k]['location'][ind_rb] = merged   ### write it ro rb --> rbturned and rb together 
+  
+    sorted_by_lower_bound = sorted(bigshock_all, key=lambda tup: tup[0])   ### and sort and choose distinct for all redbulls
+  
+    merged = []
+
+    for higher in sorted_by_lower_bound:
+      if not merged:
+          merged.append(higher)
+      else:
+          lower = merged[-1]
+          if higher[0] <= lower[1]:
+              upper_bound = max(lower[1], higher[1])
+              merged[-1] = (lower[0], upper_bound)  # replace by merged interval
+          else:
+              merged.append(higher)  
+    objects[k]['location'][ind_bigshock] = merged   ### write it ro rb --> rbturned and rb together  
   
   #get store, user from photo metadata
   user = jsn['metadata']['Uploader-Name']
@@ -1137,7 +1250,7 @@ def run(env, jsn = 'missing'):
   retailer = store.split(" ")[0]
   address = " ".join(store.split(" ")[1:])
     
-## check planogramu
+  ## planogram check
   products = ["", "Red Bull", "Shock!", "Red Bull Red", "Red Bull Blue", "Red Bull Sugar Free", "Red Bull Bez Cukru"]
   labels = ["unknown", "rb", "bigshock", "rbred", "rbblue", "rbsf", "rbsf"]
 
@@ -1146,13 +1259,22 @@ def run(env, jsn = 'missing'):
     planograms = pickle.load(handle)
    
   
-  col = 1  ## for now 
+  row, column = order_shelf_map(order)  ## get columns from the foto
+
   
-  ### just to be present
+  plan_check_all = pd.DataFrame()
   for i  in range(len(objects)):
       store_loc = parse_store_location(store)
-      plan_check_df = planogram_check(objects[i], planograms, row= i, column= col, store_location=store_loc, date="2018-11")
-      
+      plan_check_df = planogram_check(objects[i], planograms, row= i, column= column, store_location=store_loc, date="2018-11")
+      plan_check_df["shelf"] = i
+      plan_check_df= plan_check_df.rename(index=str, columns={"label": "class", "extra_share" : "planogram_extra_share", "missing_share" : "planogram_missing_share"})
+      plan_check_df = plan_check_df.append(plan_check_df[plan_check_df['class'] == 'rb'])  ## copy line with rb..
+      plan_check_df.iloc[-1, plan_check_df.columns.get_loc('class')] = 'rbturned'  ## .. and make it rbturned
+      plan_check_df = plan_check_df.append(plan_check_df[plan_check_df['class'] == 'bigshock'])  ## and the same with bigshockrest
+      plan_check_df.iloc[-1, plan_check_df.columns.get_loc('class')] = 'bigshockrest'  
+    
+      plan_check_all = plan_check_all.append(plan_check_df)
+          
     
   
  
@@ -1171,14 +1293,20 @@ def run(env, jsn = 'missing'):
   output_DF['store'] = address
   output_DF['user'] = user
   output_DF['shelf_column'] = 0
-  output_DF['planogram_eq_ratio'] = 'init'
-  output_DF['planogram_eq_ratio_extra'] = 'init'
-  output_DF['planogram_share'] = 0
+  #output_DF['planogram_eq_ratio'] = 'init'
+  #output_DF['planogram_eq_ratio_extra'] = 'init'
+  #output_DF['planogram_share'] = 0
   output_DF['after_completation'] = 0
   output_DF['photo_captured'] = photo_load
   output_DF['photo_load'] = photo_load
   output_DF['recognition_start'] = recognition_start
   output_DF['load_type'] = load_type
+
+
+  output_DF = pd.merge(output_DF, plan_check_all, how='left', on=['class', 'shelf'])
+  output_DF['planogram_share'] = output_DF['planogram_share'].fillna(0)  ### replace NA by 0 (were not present in recognised photo)
+  output_DF['planogram_missing_share'] = output_DF['planogram_missing_share'].fillna(0)
+  output_DF['planogram_extra_share'] = output_DF['planogram_extra_share'].fillna(0)
 
 
 # In[ ]:
@@ -1212,8 +1340,8 @@ def run(env, jsn = 'missing'):
   #url_photo_detected
   sorted_DF = output_DF[['retailer', 'store', 'user', 'unique_id', 'id_photo', 'url_photo', 'url_photo_recognised',
                          'url_photo_detected', 'shelf', 'class', 'representation', 'count_boxes', 'count_cans',
-                         'shelf_sizes_est_x', 'shelf_sizes_est_y', 'shelf_column', 'planogram_eq_ratio',
-                         'planogram_eq_ratio_extra', 'planogram_share', 'after_completation', 'photo_captured', 
+                         'shelf_sizes_est_x', 'shelf_sizes_est_y', 'shelf_column', 'planogram_missing_share',
+                         'planogram_extra_share', 'planogram_share', 'after_completation', 'photo_captured', 
                          'photo_load', 'recognition_start', 'db_insert', 'load_type']]
 
   
